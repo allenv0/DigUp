@@ -13,6 +13,8 @@
   --tertiary: #a1a1a6;
   --line: rgba(0, 0, 0, 0.09);
   --accent: #0a84ff;
+  --hover: rgba(0, 0, 0, 0.04);
+  color-scheme: light dark;   /* native scrollbars and controls follow the system */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", system-ui, Ubuntu, Cantarell,
     "Noto Sans", sans-serif;
   font-size: 13px;
@@ -28,6 +30,10 @@
     --secondary: #a1a1a6;
     --tertiary: #6e6e73;
     --line: rgba(255, 255, 255, 0.1);
+    --hover: rgba(255, 255, 255, 0.07);
+    /* A touch lighter than in light mode: white on the darkest moss, and the tint the folder hover shows. */
+    --moss: #3f7a63;
+    --leaf: #5f9c72;
   }
 }
 
@@ -74,6 +80,7 @@ h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: 
   display: flex; align-items: center; gap: 12px; padding: 10px 12px;
   background: var(--card); border: 1px solid var(--line); border-radius: 10px;
 }
+.folder:hover { border-color: var(--moss); }
 .folder input { width: 16px; height: 16px; accent-color: var(--moss); flex: none; }
 .folder .text { min-width: 0; flex: 1; }
 .folder .name { font-size: 13px; font-weight: 600; }
@@ -84,7 +91,11 @@ button {
   font: inherit; font-size: 13px; color: var(--text); background: var(--card); border: 1px solid var(--line);
   border-radius: 7px; padding: 6px 16px;
 }
+button:hover { background: var(--hover); }
+button:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
 button.primary { background: var(--moss); color: white; border-color: transparent; }
+button.primary:hover { background: var(--leaf); }
+input:focus-visible { outline: 2px solid var(--moss); outline-offset: 1px; }
 button.primary:disabled { opacity: 0.45; }
 button.link { background: none; border: 0; color: var(--ember); padding: 10px 2px 0; }
 
@@ -106,3 +117,11 @@ footer {
 }
 .model { font-size: 11px; color: var(--secondary); }
 .buttons { display: flex; gap: 8px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  button, .folder { transition: background-color 0.12s ease, border-color 0.12s ease; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

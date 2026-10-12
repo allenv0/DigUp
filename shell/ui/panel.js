@@ -29,6 +29,17 @@ const KIND_TITLE = { screenshot: "Screenshot", image: "Image", pdf: "PDF", doc: 
 const $ = (id) => document.getElementById(id);
 const $query = $("query"), $body = $("body"), $list = $("list"), $preview = $("preview");
 const $footer = $("footer"), $summary = $("summary"), $keys = $("keys"), $activity = $("activity");
+const $announce = $("announce");
+
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/// Says something to a screen reader without showing it; the same words twice are said once.
+let announced = "";
+function announce(text) {
+  if (text === announced) return;
+  announced = text;
+  $announce.textContent = text;
+}
 
 const state = {
   generation: 0,
@@ -162,7 +173,12 @@ function render() {
   }
   $body.hidden = empty;
   $footer.hidden = empty;
-  if (empty) return;
+  $query.setAttribute("aria-expanded", empty ? "false" : "true");
+  if (empty) {
+    $query.setAttribute("aria-activedescendant", "");
+    announce("");
+    return;
+  }
   renderList();
   renderPreview();
   renderFooter();
@@ -172,10 +188,27 @@ function renderList() {
   $list.replaceChildren();
   const nothing = !state.strong.length && !state.weaker.length;
   $list.hidden = nothing;
+  $query.setAttribute("aria-activedescendant", "");
   if (nothing) return;
+  let index = 0;
+  // Every result is a listbox option with an id, so the focused field can point at the selected one.
+  const option = (node, selected) => {
+    node.id = `digup-opt-${index++}`;
+    node.setAttribute("role", "option");
+    node.setAttribute("aria-selected", selected ? "true" : "false");
+    if (selected) $query.setAttribute("aria-activedescendant", node.id);
+    return node;
+  };
   for (const group of state.groups) {
-    $list.append(element("div", "group-title", group.title));
-    for (const hit of group.rows) $list.append(row(hit));
+    // A group of options: the listbox holds only options and groups of them.
+    const section = element("div", "group");
+    section.setAttribute("role", "group");
+    section.setAttribute("aria-label", group.title);
+    const heading = element("div", "group-title", group.title);
+    heading.setAttribute("aria-hidden", "true");   // the group's own label names it
+    section.append(heading);
+    for (const hit of group.rows) section.append(option(row(hit), state.selection === hit.path));
+    $list.append(section);
   }
   if (state.weaker.length) {
     const fold = element("div", "weaker" + (state.showWeaker ? " open" : "") + (state.selection === WEAKER ? " selected" : ""));
@@ -183,10 +216,10 @@ function renderList() {
     const count = state.weaker.length;
     fold.append(state.showWeaker ? "Weaker matches" : `${count} weaker ${count === 1 ? "match" : "matches"}`);
     fold.onclick = toggleWeaker;
-    $list.append(fold);
-    if (state.showWeaker) for (const hit of state.weaker) $list.append(row(hit));
+    $list.append(option(fold, state.selection === WEAKER));
+    if (state.showWeaker) for (const hit of state.weaker) $list.append(option(row(hit), state.selection === hit.path));
   }
-  $list.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
+  $list.querySelector(".selected")?.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
 }
 
 function row(hit) {
@@ -349,6 +382,20 @@ function renderFooter() {
   if (state.indexing && !state.error) summary += ` · still indexing (${state.indexing.done} of ${state.indexing.total})`;
   $summary.textContent = summary;
   $keys.textContent = `↩ Open   ${MOD}↩ Show in ${FILE_MANAGER}`;
+  announceResults();
+}
+
+/// What a screen reader hears when the results settle: how many, or that there are none.
+function announceResults() {
+  if (state.phase === "words") return;   // keyword results while typing: too early to say
+  if (state.error) return;
+  const total = state.strong.length + state.weaker.length;
+  if (total === 0) {
+    announce(state.isCode ? "No good matches in your code." : "No good matches.");
+  } else {
+    announce(`${state.strong.length} ${state.strong.length === 1 ? "result" : "results"}`
+      + (state.weaker.length ? `, ${state.weaker.length} weaker` : ""));
+  }
 }
 
 function message(title, text) {

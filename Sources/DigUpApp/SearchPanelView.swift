@@ -4,6 +4,8 @@ import SwiftUI
 
 struct SearchPanelView: View {
     @Bindable var controller: SearchPanelController
+    /// "Reduce transparency" on: the wash behind the content becomes opaque (the glass is opaque then anyway).
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,8 +20,12 @@ struct SearchPanelView: View {
         }
         .frame(width: SearchPanelController.width)
         .frame(maxHeight: .infinity, alignment: .top)
-        // Glass alone is too see-through over busy backgrounds.
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.75))
+        // A light wash over the vibrancy behind the panel (`SearchPanel.background`): heavy enough to hold text
+        // over a busy desktop, light enough to keep the glass. Opaque when the system asks for less transparency.
+        .background(Color(nsColor: .windowBackgroundColor).opacity(reduceTransparency ? 1 : 0.75))
+        // A hairline, as a Mac panel has, so the edge reads against a light or dark desktop.
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
@@ -265,8 +271,7 @@ private struct PanelRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(selected ? Color.accentColor.opacity(0.24) : Color.clear))
+        .rowSelection(selected)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(row.kind.title), \(row.name), \(row.reason)")
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -291,8 +296,7 @@ private struct WeakerRow: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 10)
         .frame(height: 26)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(selected ? Color.accentColor.opacity(0.24) : Color.clear))
+        .rowSelection(selected)
         .contentShape(Rectangle())
         .accessibilityAddTraits(.isButton)
     }

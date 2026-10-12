@@ -58,6 +58,25 @@ struct PlaceBadge: View {
     }
 }
 
+/// The background of a selected row in a list: the system accent while the window is active, a neutral tint
+/// otherwise, as Mac lists do. One place, so the panel's list, the window's code list and the weaker rows agree.
+private struct RowSelection: ViewModifier {
+    let selected: Bool
+    @Environment(\.controlActiveState) private var activeState
+
+    func body(content: Content) -> some View {
+        let fill: Color = selected ? (activeState == .key ? Color.accentColor.opacity(0.24)
+                                                          : Color.primary.opacity(0.08))
+                                   : .clear
+        content.background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(fill))
+    }
+}
+
+extension View {
+    /// Highlights a selectable result row.
+    func rowSelection(_ selected: Bool) -> some View { modifier(RowSelection(selected: selected)) }
+}
+
 /// Where a moment sits in a recording: a track with the matched stretch lit.
 struct MomentBar: View {
     let start: Double

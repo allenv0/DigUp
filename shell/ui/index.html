@@ -12,13 +12,16 @@
         <circle cx="10" cy="10" r="6.5"/><path d="M15 15 L20.5 20.5"/>
       </svg>
       <input id="query" type="text" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Search"
+             role="combobox" aria-controls="list" aria-autocomplete="list" aria-expanded="false"
+             aria-activedescendant=""
              placeholder="Describe it: “payment error screenshot”, “zebra in a video”…">
       <span id="activity" class="activity" hidden></span>
     </header>
     <section id="body" class="body" hidden>
       <div id="list" class="list" role="listbox" aria-label="Results"></div>
-      <div id="preview" class="preview" aria-live="polite"></div>
+      <div id="preview" class="preview"></div>
     </section>
+    <div id="announce" class="sr-only" role="status" aria-live="polite"></div>
     <footer id="footer" class="footer" hidden>
       <span id="summary" class="summary"></span>
       <span id="keys" class="keys"></span>
