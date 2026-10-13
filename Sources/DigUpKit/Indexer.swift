@@ -44,9 +44,10 @@ public final class Indexer {
     /// version may bring a new model), and this hears about it. When nil, indexing stops with `fingerprintMismatch`.
     public var resetOnModelChange: ((_ indexed: String, _ now: String) -> Void)?
 
-    /// The vector source of the embedders `makeEmbedder` makes, when it's known without starting one (llama.cpp's is):
-    /// then `checkModel()` can notice a new model before anything needs embedding.
-    public var embedderSource: String?
+    /// The vector namespace of the embedders `makeEmbedder` makes, when it's known without starting one
+    /// (`WorkerInfo.compat`; llama.cpp's and MLX's are): then `checkModel()` can notice a new engine before
+    /// anything needs embedding.
+    public var embedderCompat: String?
     /// The index folder, where what indexing costs on this Mac is kept (`MeasuredCosts`) for estimates. Unset: nothing
     /// is kept.
     public var costsFolder: URL?
@@ -290,12 +291,12 @@ public final class Indexer {
         return batches
     }
 
-    /// Compares the index with the current model and settings (`embedderSource`), without starting the model; a
-    /// change empties the index (see `resetOnModelChange`) or throws `fingerprintMismatch`. Without a known source the
-    /// check waits for the first file to embed.
+    /// Compares the index with the current engine and settings (`embedderCompat`), without starting the model; a
+    /// change empties the index (see `resetOnModelChange`) or throws `fingerprintMismatch`. Without a known
+    /// namespace the check waits for the first file to embed.
     public func checkModel() throws {
-        guard let embedderSource else { return }
-        try adopt("\(embedderSource) | \(options.fingerprint)")
+        guard let embedderCompat else { return }
+        try adopt("\(embedderCompat) | \(options.fingerprint)")
     }
 
     private func adopt(_ fingerprint: String) throws {
@@ -309,7 +310,9 @@ public final class Indexer {
     private func fullWorker() throws -> any Embedder {
         if let worker { return worker }
         let started = try makeEmbedder()
-        let fingerprint = "\(started.info.vectorSource) | \(options.fingerprint)"
+        // The fingerprint names the vector namespace, not the engine: llama.cpp and MLX make the same vectors
+        // (`VectorCompat`), so switching engines keeps the index. `vector_source` stays as provenance.
+        let fingerprint = "\(started.info.compat) | \(options.fingerprint)"
         do {
             try adopt(fingerprint)
         } catch {
@@ -318,6 +321,7 @@ public final class Indexer {
         }
         try store.setMeta("fingerprint", fingerprint)
         try store.setMeta("vector_source", started.info.vectorSource)
+        try store.setMeta("vector_compat", started.info.compat)
         worker = started
         return started
     }

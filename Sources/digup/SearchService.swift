@@ -34,6 +34,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private var codeSearcher: Searcher?
     private var roots: [String], skipped: [String], types: Set<String>, codeRoots: [String], codeSkipped: [String]
     private let idleSeconds: Double
+    private let backend: EmbeddingBackend
     private let log: URL
 
     private var encoder: (any Embedder)?
@@ -50,7 +51,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
     private let renderSlots = DispatchSemaphore(value: 2)
 
     init(index: URL, roots: [String], skipped: [String], types: Set<String>, codeRoots: [String],
-         codeSkipped: [String], idleSeconds: Double) throws {
+         codeSkipped: [String], idleSeconds: Double, backend: EmbeddingBackend = .automatic) throws {
         directory = index
         store = try IndexStore(directory: index, file: IndexStore.mainFile)
         searcher = try Searcher(store: store, loadVectors: false)
@@ -60,6 +61,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         self.codeRoots = codeRoots
         self.codeSkipped = codeSkipped
         self.idleSeconds = idleSeconds
+        self.backend = backend
         log = index.appendingPathComponent("worker-query.log")
         previews = index.appendingPathComponent("previews")
         try? FileManager.default.removeItem(at: previews)
@@ -128,12 +130,12 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
             var warning: String?
             if wantMeaning, !text.isEmpty {
                 vector = self.vector(for: text, code: code)
-                // Vectors from another model or runtime must never meet: keyword-only then, and say so once.
-                if vector != nil, let indexed = (code ? codeSearcher : searcher)?.vectorSource,
-                   let source = encoder?.info.vectorSource, indexed != source {
+                // Vectors from another namespace must never meet: keyword-only then, and say so once.
+                if vector != nil, let indexed = (code ? codeSearcher : searcher)?.vectorCompat,
+                   let source = encoder?.info.compat, indexed != source {
                     vector = nil
                     if !warnedAboutSource {
-                        warning = "meaning search is off: the index was built with \(indexed), the encoder is \(source)"
+                        warning = "meaning search is off: the index's vectors live in \(indexed), the encoder makes \(source)"
                         warnedAboutSource = true
                     }
                 }
@@ -248,7 +250,7 @@ final class SearchService: @unchecked Sendable {   // its state is guarded by `l
         encoderState = "starting"
         do {
             let started = Date()
-            let worker = try makeEmbedder(textOnly: true, log: log, qos: .userInitiated)
+            let worker = try makeEmbedder(textOnly: true, backend: backend, log: log, qos: .userInitiated)
             encoder = worker
             encoderState = "ready"
             write(["event": "encoder", "state": "ready", "seconds": (Date().timeIntervalSince(started) * 100).rounded() / 100,
@@ -313,7 +315,8 @@ func searchService(_ args: Arguments) throws -> Int32 {
         types: IndexOptions.extensions((args.lists["--exclude-ext"] ?? []).joined(separator: ",")),
         codeRoots: (args.lists["--code-root"] ?? []).map { Arguments.folderURL($0).path },
         codeSkipped: (args.lists["--code-exclude"] ?? []).map { Arguments.folderURL($0).path },
-        idleSeconds: args.values["--encoder-idle"].flatMap(Double.init) ?? 300)
+        idleSeconds: args.values["--encoder-idle"].flatMap(Double.init) ?? 300,
+        backend: try args.backend())
     emit(["event": "ready", "index": args.indexFolder.path])
     return service.serve()
 }

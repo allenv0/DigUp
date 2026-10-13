@@ -17,10 +17,21 @@ public enum ModelFiles {
         public let name: String
         public let bytes: Int64
         public let sha256: String
+        public let repository: String
+        public let revision: String
 
-        /// Hugging Face's address for this file at the pinned revision (it redirects to a CDN that takes HTTP ranges).
+        public init(name: String, bytes: Int64, sha256: String, repository: String = ModelFiles.repository,
+                    revision: String = ModelFiles.revision) {
+            self.name = name
+            self.bytes = bytes
+            self.sha256 = sha256
+            self.repository = repository
+            self.revision = revision
+        }
+
+        /// Hugging Face's address for this file at its pinned revision (it redirects to a CDN that takes HTTP ranges).
         public var url: URL {
-            URL(string: "https://huggingface.co/\(ModelFiles.repository)/resolve/\(ModelFiles.revision)/\(name)")!
+            URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(name)")!
         }
     }
 
@@ -37,21 +48,29 @@ public enum ModelFiles {
     /// Where the app keeps them (`AppPaths`).
     public static let installed = AppPaths.applicationSupport.appendingPathComponent("Models")
 
-    /// The pinned revision's folder in the Hugging Face cache (`hf download` puts the files there): `$HF_HUB_CACHE`,
-    /// `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.
+    /// The pinned revision's folder in the Hugging Face cache (`hf download` puts the files there).
     public static var huggingFaceSnapshot: URL {
-        let environment = ProcessInfo.processInfo.environment
-        let hub = environment["HF_HUB_CACHE"].map { URL(fileURLWithPath: $0) }
-            ?? environment["HF_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("hub") }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub")
-        return hub.appendingPathComponent("models--\(repository.replacingOccurrences(of: "/", with: "--"))/snapshots/\(revision)")
+        hubCache.appendingPathComponent("models--\(repository.replacingOccurrences(of: "/", with: "--"))"
+                                        + "/snapshots/\(revision)")
     }
 
-    /// `file` in the Hugging Face cache, when it's there at the right size (its checksum is for the caller to check).
+    /// `file` in its repo's Hugging Face cache, when it's there at the right size (its checksum is for the caller
+    /// to check).
     public static func cachedCopy(of file: File) -> URL? {
-        let url = huggingFaceSnapshot.appendingPathComponent(file.name).resolvingSymlinksInPath()
+        let hub = file.repository == repository ? huggingFaceSnapshot
+            : hubCache.appendingPathComponent("models--\(file.repository.replacingOccurrences(of: "/", with: "--"))"
+                                               + "/snapshots/\(file.revision)")
+        let url = hub.appendingPathComponent(file.name).resolvingSymlinksInPath()
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
         return size == file.bytes ? url : nil
+    }
+
+    /// The Hugging Face cache folder: `$HF_HUB_CACHE`, `$HF_HOME/hub`, or `~/.cache/huggingface/hub`.
+    static var hubCache: URL {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["HF_HUB_CACHE"].map { URL(fileURLWithPath: $0) }
+            ?? environment["HF_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("hub") }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub")
     }
 
     /// The files that aren't in `folder` yet. Only verified files get their final name, so being there is enough.
@@ -73,5 +92,15 @@ public enum ModelFiles {
             if done { break }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The folders the runtimes look in, first match wins. `$DIGUP_MODELS` is the app's choice and the only
+    /// place they look then: the developer's Hugging Face cache mustn't hide a download that's missing.
+    /// Without it (the CLI): Application Support, then the Hugging Face cache.
+    public static var modelFolders: [URL] {
+        if let chosen = ProcessInfo.processInfo.environment["DIGUP_MODELS"], !chosen.isEmpty {
+            return [URL(fileURLWithPath: chosen)]
+        }
+        return [installed, huggingFaceSnapshot]
     }
 }

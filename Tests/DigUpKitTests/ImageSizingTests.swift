@@ -1,7 +1,7 @@
 import Testing
-@testable import LlamaRuntime
+@testable import DigUpKit
 
-/// llama.cpp has to see the pixels the reference sees: transformers' resize target, then PIL's bicubic.
+/// Every engine has to see the pixels the reference sees: transformers' resize target, then PIL's bicubic.
 @Suite struct ImageSizingTests {
     @Test func targetSizeFillsTheBudget() {
         // A 1440×900 screenshot and a 768×768 photo, at the budgets the indexer uses.

@@ -120,9 +120,13 @@ import Testing
         #expect(vectors == 0)
         #expect(try searcher.search("K7Q2LM", queryVector: nil).map(\.path) == ["/d/shot.png"])
         // Schema 4: the vectors are named by their version, not by the llama.cpp build that made them.
+        // Schema 6: engines whose vectors agree share a namespace (VectorCompat), so the fingerprint now
+        // names that namespace, while vector_source stays as provenance.
         let named = "google/embeddinggemma-2@bfcd298 llama.cpp-vectors1 text-q8_0+mmproj-q8_0"
+        let compat = VectorCompat.embeddingGemma2
         #expect(try store.meta("vector_source") == named)
-        #expect(try store.meta("fingerprint")?.hasPrefix(named + " | ") == true)
+        #expect(try store.meta("vector_compat") == compat)
+        #expect(try store.meta("fingerprint")?.hasPrefix(compat + " | ") == true)
         // Schema 5 (long files finished later, `LongFilesTests`) leaves short ones as they were.
         #expect(try store.unfinishedCount() == (0, 0))
     }

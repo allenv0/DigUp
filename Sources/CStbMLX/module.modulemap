@@ -1,0 +1,4 @@
+module CStbMLX {
+    header "include/stb_image_shim.h"
+    export *
+}

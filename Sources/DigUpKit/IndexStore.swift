@@ -20,7 +20,7 @@ public struct FileRecord: Sendable {
 public final class IndexStore {
     public let directory: URL
     public let db: Database
-    static let schemaVersion: Int64 = 5
+    static let schemaVersion: Int64 = 6
 
     /// Keyword search's tokenizer. Marks (M*) count as letters, so Bengali vowel signs and Arabic harakat stay inside
     /// their words: by default SQLite splits on them ("কলকাতায়" became "কলক", "ত", "য").
@@ -101,6 +101,7 @@ public final class IndexStore {
             if (1...2).contains(version) { try migrateScreenshotText() }
             if (1...3).contains(version) { try migrateVectorNames() }
             if (1...4).contains(version) { try migrateLongFiles() }
+            if (1...5).contains(version) { try migrateVectorCompat() }
         }
     }
 
@@ -202,6 +203,27 @@ public final class IndexStore {
             WHERE kind = 'doc' AND state = 'done' AND json_extract(info, '$.chunks') = '40';
             PRAGMA user_version = 5;
             """)
+    }
+
+    /// Schema 5 → 6: vector namespaces. Engines whose vectors agree share one (`VectorCompat`), so an index
+    /// made by llama.cpp is searched by MLX and added to by it without embedding anything again. The
+    /// fingerprint now names the namespace instead of the engine, `vector_compat` records it, and
+    /// `vector_source` stays as provenance. Every vector so far was made by llama.cpp's vectors1 runtime,
+    /// whose namespace MLX shares; anything else (the Python reference worker) keeps itself.
+    private func migrateVectorCompat() throws {
+        var source: String?
+        try db.query("SELECT value FROM meta WHERE key = 'vector_source'") { source = $0.text(0) }
+        if let source, source.contains(" llama.cpp-vectors1 ") {
+            let compat = VectorCompat.embeddingGemma2
+            // The fingerprint's first part (before " | ") named the engine that made the vectors; it names
+            // the namespace now. (A fingerprint without " | " isn't one of ours; left alone.)
+            try db.execute("""
+                UPDATE meta SET value = '\(compat) | ' || substr(value, instr(value, ' | ') + 3)
+                WHERE key = 'fingerprint' AND instr(value, ' | ') > 0;
+                """)
+            try setMeta("vector_compat", compat)
+        }
+        try db.execute("PRAGMA user_version = 6;")
     }
     // MARK: Meta
 

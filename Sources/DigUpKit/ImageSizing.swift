@@ -3,10 +3,10 @@
 /// mtmd (llama.cpp's multimodal library) fixes the token budget per context, and each context loads the encoder
 /// weights; it also rescales only images outside its range, while the reference always fills the budget. So images are
 /// resized here, and mtmd takes them as they are. Checked against Pillow bit for bit.
-enum ImageSizing {
+public enum ImageSizing {
     /// transformers' Gemma 4 image processor: scale to fill `budget` soft tokens (each 3 × 3 patches of 16 px) keeping
     /// the aspect ratio, each side rounded down to a multiple of 48 px.
-    static func targetSize(height: Int, width: Int, budget: Int) -> (height: Int, width: Int)? {
+    public static func targetSize(height: Int, width: Int, budget: Int) -> (height: Int, width: Int)? {
         let patch = 16, pooling = 3
         let maxPatches = budget * pooling * pooling
         let factor = (Double(maxPatches * patch * patch) / Double(height * width)).squareRoot()
@@ -27,7 +27,7 @@ enum ImageSizing {
 
     /// Pillow's bicubic resampling of packed RGB (a = −0.5, the kernel widened when shrinking, 22-bit fixed point):
     /// what the reference gets from PIL's Image.resize. Ported from mtmd's copy of it.
-    static func resizeBicubic(_ source: UnsafePointer<UInt8>, width: Int, height: Int, toWidth: Int, toHeight: Int)
+    public static func resizeBicubic(_ source: UnsafePointer<UInt8>, width: Int, height: Int, toWidth: Int, toHeight: Int)
         -> [UInt8] {
         switch (toWidth != width, toHeight != height) {
         case (true, true):

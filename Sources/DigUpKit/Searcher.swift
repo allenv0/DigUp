@@ -38,6 +38,9 @@ public final class Searcher {
     private var rowSetsScale: [Bool] = []
     private var fileKind: [Int64: FileKind] = [:]
     public private(set) var vectorSource: String?
+    /// The namespace the index's vectors live in (`WorkerInfo.compat`), from the meta the indexer wrote: what
+    /// a query encoder must be making for meaning search to work on this index as it is.
+    public private(set) var vectorCompat: String?
     /// False after `releaseVectors()` (or `loadVectors: false`): keyword search still works, and the next search with
     /// a query vector loads them again.
     public private(set) var vectorsLoaded = false
@@ -103,6 +106,7 @@ public final class Searcher {
             fileKind[row.int(0)] = FileKind(rawValue: row.text(1) ?? "")
         }
         vectorSource = try store.meta("vector_source")
+        vectorCompat = try store.meta("vector_compat") ?? vectorSource
     }
 
     /// How much finding the query's words counts against meaning (`search`). Code's words count for less: they're

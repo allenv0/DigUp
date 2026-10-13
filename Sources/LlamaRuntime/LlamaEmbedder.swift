@@ -24,11 +24,12 @@ public final class LlamaEmbedder: Embedder {
     /// The llama.cpp release this was built with (`scripts/build-llama.sh`), for logs.
     public static let buildTag = LLAMA_BUILD_TAG
 
-    /// What every LlamaEmbedder reports (its `vectorSource` goes into index fingerprints), known without loading it.
+    /// What every LlamaEmbedder reports (its `vectorSource` goes into index provenance, its `compat` into
+    /// index fingerprints), known without loading it.
     public static let modelInfo = WorkerInfo(model: "google/embeddinggemma-2", revision: LlamaModels.revision,
                                              runtime: "llama.cpp-vectors\(vectorVersion)",
                                              dtype: "text-q8_0+mmproj-q8_0", dim: 768, textOnly: false,
-                                             loadSeconds: nil)
+                                             loadSeconds: nil, vectorCompat: VectorCompat.embeddingGemma2)
 
     public private(set) var info: WorkerInfo
     private var model: OpaquePointer?
@@ -104,7 +105,7 @@ public final class LlamaEmbedder: Embedder {
         self.maxTokens = maxTokens
         let known = Self.modelInfo
         info = WorkerInfo(model: known.model, revision: known.revision, runtime: known.runtime, dtype: known.dtype,
-                          dim: embeddingSize, textOnly: textOnly, loadSeconds: nil)
+                          dim: embeddingSize, textOnly: textOnly, loadSeconds: nil, vectorCompat: known.vectorCompat)
         // The first calls build the Metal pipelines: pay that now (the panel is opening).
         do {
             for _ in 0..<2 { _ = try embedTexts([Prompts.query("warm up")]) }
@@ -114,7 +115,7 @@ public final class LlamaEmbedder: Embedder {
         }
         let seconds = (Date().timeIntervalSince(started) * 100).rounded() / 100
         info = WorkerInfo(model: info.model, revision: info.revision, runtime: info.runtime, dtype: info.dtype,
-                          dim: info.dim, textOnly: textOnly, loadSeconds: seconds)
+                          dim: info.dim, textOnly: textOnly, loadSeconds: seconds, vectorCompat: known.vectorCompat)
         LlamaLog.shared.line("ready in \(seconds) s (\(textOnly ? "text-only" : "full"), llama.cpp \(Self.buildTag), "
                              + "vectors \(Self.vectorVersion))")
     }
@@ -165,6 +166,36 @@ public final class LlamaEmbedder: Embedder {
     }
 
     // MARK: Media
+
+    /// The token ids mtmd frames a media input with: marker ids around one `-1` per soft-token row. Tests hold
+    /// `Framing` to exactly this sequence.
+    public func mediaTokenIDs(path: String, image: Bool, budget: Int) throws -> [Int] {
+        guard media != nil else { throw WorkerError.failed("this embedder was started text-only") }
+        let bitmap = try load(path, image: image, budget: budget)
+        defer { mtmd_bitmap_free(bitmap) }
+        let chunks = mtmd_input_chunks_init()
+        defer { mtmd_input_chunks_free(chunks) }
+        var bitmaps: [OpaquePointer?] = [bitmap]
+        let marker = String(cString: mtmd_default_marker())
+        let status = marker.withCString { marker in
+            var text = mtmd_input_text(text: marker, text_len: strlen(marker), add_special: true,
+                                       parse_special: true)
+            return mtmd_tokenize(media, chunks, &text, &bitmaps, 1)
+        }
+        guard status == 0 else { throw LlamaError("can't tokenize \(path) (\(status))") }
+        var ids: [Int] = []
+        for index in 0..<mtmd_input_chunks_size(chunks) {
+            let chunk = mtmd_input_chunks_get(chunks, index)
+            if mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT {
+                var count = 0
+                guard let tokens = mtmd_input_chunk_get_tokens_text(chunk, &count) else { continue }
+                for position in 0..<count { ids.append(Int(tokens[position])) }
+            } else {
+                ids += Array(repeating: -1, count: Int(mtmd_input_chunk_get_n_tokens(chunk)))
+            }
+        }
+        return ids
+    }
 
     private func embedMedia(_ path: String, image: Bool, budget: Int) throws -> [Float] {
         let bitmap = try load(path, image: image, budget: budget)
@@ -248,7 +279,7 @@ public final class LlamaEmbedder: Embedder {
     // MARK: Text model
 
     /// `<bos> text <eos>`, cut to `maxTokens` the way transformers cuts (keeping both special tokens).
-    private func tokenize(_ text: String) -> [llama_token] {
+    private func tokenize(_ text: String, maxTokens: Int) -> [llama_token] {
         let utf8 = Array(text.utf8CString)
         var tokens = [llama_token](repeating: 0, count: utf8.count + 8)
         var count = llama_tokenize(vocab, utf8, Int32(utf8.count - 1), &tokens, Int32(tokens.count), true, true)
@@ -261,6 +292,16 @@ public final class LlamaEmbedder: Embedder {
             tokens = Array(tokens[0..<(maxTokens - 1)]) + [llama_vocab_eos(vocab)]
         }
         return tokens
+    }
+
+    private func tokenize(_ text: String) -> [llama_token] {
+        tokenize(text, maxTokens: maxTokens)
+    }
+
+    /// The ids this model's tokenizer makes for `text`, framed `<bos> … <eos>` and cut at `maxLength` keeping
+    /// the end: the tokenizer golden test holds MLX's tokenizer to exactly these.
+    public func tokenize(_ text: String, maxLength: Int) -> [Int] {
+        tokenize(text, maxTokens: maxLength).map(Int.init)
     }
 
     /// Starts the next input in the batch (each input is its own sequence).
@@ -314,7 +355,7 @@ public final class LlamaEmbedder: Embedder {
     }
 
     /// llama.cpp's process-wide setup, once.
-    private static let backend: Void = {
+    static let backend: Void = {
         llama_log_set(LlamaLog.callback, LlamaLog.userData)
         mtmd_helper_log_set(LlamaLog.callback, LlamaLog.userData)
         #if !os(macOS)

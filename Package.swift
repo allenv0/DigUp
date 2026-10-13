@@ -13,6 +13,25 @@ let llamaLink: [LinkerSetting] = [.unsafeFlags(["-L\(vendor)/llama/lib"])]
 let engineDependencies: [Target.Dependency] = []
 let engineLink: [LinkerSetting] = []
 let portableTargets: [Target] = []
+// mlx-swift: the second embedding runtime (Sources/MLXRuntime), macOS only. Pinned exact, like llama.cpp's
+// tag: an upgrade is a deliberate change that `swift test` gates (MLXReferenceVectorTests against the same
+// Reference/vectors.json llama.cpp is held to).
+let mlxDependencies: [Package.Dependency] = [
+    .package(url: "https://github.com/ml-explore/mlx-swift", exact: "0.31.6"),
+]
+let mlxProducts: [Target.Dependency] = [
+    .product(name: "MLX", package: "mlx-swift"),
+    .product(name: "MLXNN", package: "mlx-swift"),
+    .product(name: "MLXFast", package: "mlx-swift"),
+]
+let mlxTargets: [Target] = [
+    .target(name: "CStbMLX", path: "Sources/CStbMLX"),
+    .target(name: "MLXRuntime", dependencies: ["DigUpKit", "LlamaRuntime", "CStbMLX"] + mlxProducts),
+]
+let mlxTestTargets: [Target] = [
+    .testTarget(name: "MLXRuntimeTests", dependencies: ["MLXRuntime", "DigUpKit", "LlamaRuntime"]),
+]
+let digupDependencies: [Target.Dependency] = ["DigUpKit", "LlamaRuntime", "MLXRuntime"]
 #else
 // llama.cpp as shared libraries: ggml's backends (CPU, and CUDA or Vulkan when the machine has them) load at run time
 // from beside the helper (`LlamaEmbedder`), so one build runs anywhere. Dev builds find them in Vendor/.
@@ -47,6 +66,11 @@ let portableTargets: [Target] = [
     // PDF text and page rendering (Chromium's PDFium, prebuilt).
     .systemLibrary(name: "CPDFium", path: "Sources/CPDFium"),
 ]
+// No MLX off the Mac: the runtime is macOS only (the target doesn't exist, so nothing else can name it).
+let mlxDependencies: [Package.Dependency] = []
+let mlxTargets: [Target] = []
+let mlxTestTargets: [Target] = []
+let digupDependencies: [Target.Dependency] = ["DigUpKit", "LlamaRuntime"]
 #endif
 
 #if os(macOS)
@@ -78,7 +102,7 @@ let package = Package(
         .executable(name: "digup", targets: ["digup"]),
         .library(name: "DigUpKit", targets: ["DigUpKit"]),
     ] + appProducts,
-    dependencies: appDependencies,
+    dependencies: appDependencies + mlxDependencies,
     targets: portableTargets + [
         // The engine: crawler, extractors, index store, the embedder interface and worker client, search. No UI.
         // Platform/ holds what differs by OS (Apple's frameworks on macOS, the C libraries above elsewhere).
@@ -86,12 +110,13 @@ let package = Package(
         // llama.cpp (scripts/build-llama.sh builds it into Vendor/llama) and EmbeddingGemma 2 on it.
         .systemLibrary(name: "CLlama", path: llamaModule),
         .target(name: "LlamaRuntime", dependencies: ["CLlama", "DigUpKit"], linkerSettings: llamaLink),
+        // MLX (mlx-swift) and EmbeddingGemma 2 on it (macOS only; see mlxDependencies above).
         // Developer CLI: estimate / index / search / status / eval. Doubles as the eval harness, and the app runs it as
         // its indexing helper and its query encoder.
-        .executableTarget(name: "digup", dependencies: ["DigUpKit", "LlamaRuntime"]),
+        .executableTarget(name: "digup", dependencies: digupDependencies),
         // Pictures/ holds ImageTests' pictures (scripts/testbed/make_test_pictures.swift), read by path.
         .testTarget(name: "DigUpKitTests", dependencies: ["DigUpKit"], exclude: ["Pictures"]),
         // Reference/ holds the fixed inputs and vectors of ReferenceVectorTests, read by path.
         .testTarget(name: "LlamaRuntimeTests", dependencies: ["LlamaRuntime"], exclude: ["Reference"]),
-    ] + appTargets
+    ] + mlxTargets + mlxTestTargets + appTargets
 )

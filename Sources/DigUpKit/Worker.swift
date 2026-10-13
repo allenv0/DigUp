@@ -9,9 +9,13 @@ public struct WorkerInfo: Codable, Sendable {
     public let dim: Int
     public let textOnly: Bool
     public let loadSeconds: Double?
+    /// The vector namespace this runtime's vectors live in, when it shares one with another runtime
+    /// (`VectorCompat`). Both engines behind `Embedder` report EmbeddingGemma 2's shared namespace; the
+    /// Python reference worker doesn't send this and never shares.
+    public let vectorCompat: String?
 
     public init(model: String, revision: String, runtime: String, dtype: String, dim: Int, textOnly: Bool,
-                loadSeconds: Double?) {
+                loadSeconds: Double?, vectorCompat: String? = nil) {
         self.model = model
         self.revision = revision
         self.runtime = runtime
@@ -19,10 +23,62 @@ public struct WorkerInfo: Codable, Sendable {
         self.dim = dim
         self.textOnly = textOnly
         self.loadSeconds = loadSeconds
+        self.vectorCompat = vectorCompat
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case model, revision, runtime, dtype, dim, textOnly, loadSeconds, vectorCompat
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        model = try values.decode(String.self, forKey: .model)
+        revision = try values.decode(String.self, forKey: .revision)
+        runtime = try values.decode(String.self, forKey: .runtime)
+        dtype = try values.decode(String.self, forKey: .dtype)
+        dim = try values.decode(Int.self, forKey: .dim)
+        textOnly = try values.decode(Bool.self, forKey: .textOnly)
+        loadSeconds = try values.decodeIfPresent(Double.self, forKey: .loadSeconds)
+        vectorCompat = try values.decodeIfPresent(String.self, forKey: .vectorCompat)
     }
 
     /// Vectors from different models, revisions, runtimes or precisions must never share an index.
     public var vectorSource: String { "\(model)@\(revision.prefix(7)) \(runtime) \(dtype)" }
+
+    /// The namespace an index's vectors must be in for this runtime to add to them and search them as they
+    /// are: an explicit shared one when the parity gates passed, otherwise this runtime alone. Index
+    /// fingerprints and query/index checks compare this, so switching between engines that agree never
+    /// re-embeds anything.
+    public var compat: String { vectorCompat ?? vectorSource }
+}
+
+/// The vector namespaces that more than one runtime makes vectors in. Each is a claim the tests hold:
+/// `ReferenceVectorTests` and `MLXReferenceVectorTests` require cosine >= 0.999 against one reference for
+/// every input, and the evals require recall within noise when an index made by one engine is searched with
+/// the other. A runtime that stops passing gets its own namespace (its `vectorSource`) instead — switching
+/// engines then embeds everything again, which is what the claim is worth avoiding.
+public enum VectorCompat {
+    /// EmbeddingGemma 2's GGUF revision (`ModelFiles.revision`) at vectors version 1: llama.cpp
+    /// (`llama.cpp-vectors1`) and MLX (`mlx-vectors1`) both make these vectors.
+    public static let embeddingGemma2 = "embeddinggemma-2@\(String(ModelFiles.revision.prefix(7))) vectors1"
+}
+
+/// Which runtime embeds: llama.cpp (what ships), MLX (the second engine, macOS only), or whatever
+/// "automatic" resolves to. The CLI takes it as `--backend`, the app's Settings store it as a string.
+public enum EmbeddingBackend: String, CaseIterable, Sendable {
+    case automatic, llama, mlx
+
+    /// What "automatic" is today: llama.cpp. It becomes MLX when the MLX engine's gates have passed
+    /// (`MLXReferenceVectorTests`, the eval cross-matrix, and the speed table in docs/mlx-backend-plan.md,
+    /// Phase 5) — a one-constant flip.
+    public var resolved: EmbeddingBackend {
+        switch self {
+        case .automatic: Self.automaticChoice
+        case .llama, .mlx: self
+        }
+    }
+
+    static let automaticChoice: EmbeddingBackend = .llama
 }
 
 /// The four calls every embedding runtime answers: the model linked into this process (llama.cpp, `LlamaRuntime`), or
