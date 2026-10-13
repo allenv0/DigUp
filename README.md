@@ -109,14 +109,17 @@ Reading code takes about 20 seconds for a small app, and about 20 minutes and 13
 
 ```
 your folders ─► readers (ImageIO, PDFKit, AVFoundation, and Vision for the text in screenshots)
-             ─► EmbeddingGemma 2 on llama.cpp (Metal), in a helper process that quits when it's done
+             ─► EmbeddingGemma 2 on llama.cpp (Metal) or MLX (mlx-swift), in a helper process
+                that quits when it's done
              ─► one SQLite file: a vector for every picture, page, passage, video frame and 30 s of sound,
                 plus a keyword index (code search keeps a second one, for code)
 your words   ─► the same model's text part (~250 MB, only while you search) ─► nearest vectors + exact words
 ```
 
 DigUp runs ggml-org's 8-bit build of EmbeddingGemma 2 through [llama.cpp](https://github.com/ggml-org/llama.cpp) on
-the Mac's GPU. Every vector lives in the same 768-dimensional space, which is why one query can rank a video frame
+the Mac's GPU, or the same weights converted once to bf16 through [mlx-swift](https://github.com/ml-explore/mlx-swift)
+(choose in Settings → Storage → Engine, or `digup --backend mlx`). Every vector lives in the same 768-dimensional space,
+whichever engine made it — switching engines never re-indexes — which is why one query can rank a video frame
 against a PDF page. A search embeds your words in milliseconds and compares them with everything in the index.
 Exact-word matches get a boost, because no embedding holds an invoice number exactly.
 
@@ -133,6 +136,7 @@ macros the build needs.
 git clone https://github.com/ARahim3/DigUp && cd DigUp
 scripts/build-llama.sh            # llama.cpp at a pinned tag, with a one-line patch (a few minutes)
 swift build -c release && swift test
+scripts/mlx-metallib.sh           # colocate MLX's Metal kernels (once per clean build; build.sh does it too)
 ./build.sh                        # → build.noindex/DigUp.app
 ```
 
@@ -149,6 +153,14 @@ them by what they show or say, and takes you to the page or moment. The two work
 
 **Why is the download 865 MB?** That's the model: the text part (310 MB) and the image and audio encoders (555 MB).
 The app itself is about 20 MB.
+
+**Which engine should I use?** Automatic (the default) uses llama.cpp. MLX is the same model through Apple's MLX
+framework — same vectors, same results within the reference tolerance — as an opt-in in Settings → Storage.
+On the M4 Pro behind the estimates MLX encodes text at parity with llama.cpp but images and audio slower
+and with ~3.5× the peak memory (bf16 weights), so Automatic stays llama.cpp until the 1.2× throughput gate
+in `docs/mlx-backend-plan.md` is met. Switching either way never re-indexes; if MLX can't start, DigUp
+quietly uses llama.cpp. Settings → Storage also offers Re-embed everything… to remake all vectors
+with the chosen engine (takes as long as the first pass).
 
 **Will it slow my Mac down?** Only the first pass is heavy. After that it reads new files only. The model runs in a
 separate process that quits when it's done, and the search side only loads while you're searching.
@@ -171,7 +183,8 @@ DigUp is free and open source, and it stays that way. If it helps you and you'd 
 ## Thanks
 
 DigUp is built on [EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) by Google DeepMind (Apache 2.0),
-[llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) and [Sparkle](https://sparkle-project.org) (MIT). Their
+[llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT), [mlx-swift](https://github.com/ml-explore/mlx-swift) (MIT)
+and [Sparkle](https://sparkle-project.org) (MIT). Their
 license notices ship inside the app, in `DigUp.app/Contents/Resources/Acknowledgements.txt`.
 
 DigUp isn't affiliated with Google or Apple. Gemma is a trademark of Google LLC; Mac and Spotlight are trademarks of

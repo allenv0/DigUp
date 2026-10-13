@@ -527,9 +527,58 @@ private struct FolderStatusRow: View {
 
 private struct StorageSettings: View {
     let state: SettingsState
+    @State private var preparingMLX = false
+    @State private var prepareStatus: String?
+    @State private var mlxRefresh = 0
+    @State private var reembedding = false
 
     var body: some View {
         Form {
+            Section {
+                Picker("Engine", selection: Binding(get: { state.model.settings.embeddingBackend },
+                                                    set: { state.app.setEmbeddingBackend($0) })) {
+                    ForEach(EmbeddingBackend.allCases, id: \.rawValue) { backend in
+                        Text(backend.displayName).tag(backend)
+                    }
+                }
+                .pickerStyle(.segmented)
+                LabeledContent("MLX weights") {
+                    Text(mlxStatusLine)
+                }
+                if case .convertible = mlxState {
+                    LabeledContent("") {
+                        HStack(spacing: 8) {
+                            Button(preparingMLX ? "Preparing…" : "Prepare MLX weights…") {
+                                prepareMLX()
+                            }
+                            .controlSize(.small)
+                            .disabled(preparingMLX || !state.model.download.isReady)
+                            if let prepareStatus {
+                                Text(prepareStatus)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                LabeledContent("Vectors") {
+                    HStack(spacing: 8) {
+                        Button("Re-embed everything…") { reembedding = true }
+                            .controlSize(.small)
+                            .disabled(!state.model.hasFolders && !state.model.hasCode)
+                        Text("with \(state.model.settings.embeddingBackend.resolved == .mlx ? "MLX" : "llama.cpp")")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Engine")
+            } footer: {
+                Text(EmbeddingBackend.automaticExplainer + " First MLX use converts the GGUFs once (~10–30 s, ~1.4 GB beside them), showing “Preparing MLX engine…” in the log; the model download itself never changes.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Section {
                 LabeledContent("EmbeddingGemma 2") {
                     Text("Google · Apache 2.0 · 865 MB")
@@ -588,13 +637,82 @@ private struct StorageSettings: View {
             }
             Section {
                 Text("DigUp \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · "
-                     + "EmbeddingGemma 2 by Google (Apache 2.0), run by llama.cpp (MIT).")
+                     + "EmbeddingGemma 2 by Google (Apache 2.0), run by llama.cpp (MIT) or MLX on mlx-swift (MIT).")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
+        .confirmationDialog("Re-embed everything with \(state.model.settings.embeddingBackend.resolved == .mlx ? "MLX" : "llama.cpp")?",
+                            isPresented: $reembedding) {
+            Button("Re-embed", role: .destructive) {
+                state.app.reembedVectors()
+            }
+        } message: {
+            Text("Every file is embedded again, which takes as long as the first pass. File names and keyword search keep working; meaning results refresh as the new vectors land.")
+        }
+    }
+
+    /// The MLX cache state for the current models folder. `mlxRefresh` re-reads it after preparing.
+    private var mlxState: MLXCache.State {
+        _ = mlxRefresh
+        return MLXCache.state(modelsDirectory: state.model.settings.modelsDirectory)
+    }
+
+    private var mlxStatusLine: String {
+        switch mlxState {
+        case .ready(let cache):
+            let size = MLXCache.bytes(modelsDirectory: state.model.settings.modelsDirectory)
+            return "Ready (\(bytes(size)) in \(cache.lastPathComponent))"
+        case .convertible:
+            return state.model.download.isReady ? "To convert on first use" : "Needs the model first"
+        case .missing:
+            return "Needs the model first"
+        }
+    }
+
+    /// Runs the bundled helper's `convert-mlx` (the same conversion the first MLX run does by itself),
+    /// reporting its progress lines in Settings until it finishes.
+    private func prepareMLX() {
+        guard !preparingMLX else { return }
+        preparingMLX = true
+        prepareStatus = "Starting…"
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
+        let process = Process()
+        process.executableURL = FileManager.default.fileExists(atPath: helper.path) ? helper : URL(fileURLWithPath: ".build/debug/digup")
+        process.arguments = ["convert-mlx"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["DIGUP_MODELS"] = state.model.settings.modelsDirectory.path
+        process.environment = environment
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            Task { @MainActor in
+                // The converter logs one line per step; the last line is what matters.
+                if let last = text.split(separator: "\n").last {
+                    prepareStatus = String(last).trimmingCharacters(in: .whitespaces)
+                }
+            }
+        }
+        process.terminationHandler = { _ in
+            Task { @MainActor in
+                output.fileHandleForReading.readabilityHandler = nil
+                preparingMLX = false
+                prepareStatus = nil
+                mlxRefresh += 1
+                await state.refresh()
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            preparingMLX = false
+            prepareStatus = "Couldn't start: \(error.localizedDescription)"
+        }
     }
 }
 

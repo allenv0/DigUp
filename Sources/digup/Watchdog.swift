@@ -17,6 +17,15 @@ final class Watchdog: @unchecked Sendable {
         min(8 << 30, max(4 << 30, ProcessInfo.processInfo.physicalMemory / 2))
     }
 
+    /// The helper's memory limit for an embedding backend. MLX's bf16 cache holds ~1.4 GB of weights
+    /// (vs ~0.9 GB for llama.cpp's Q8_0 mmaps), so its floor is 1 GB higher; the ceiling stays 8 GB.
+    /// The text-only query encoder never approaches either — this guards the indexing helper.
+    static func memoryLimit(for backend: EmbeddingBackend) -> UInt64 {
+        let base = defaultMemoryLimit
+        guard backend.resolved == .mlx else { return base }
+        return min(8 << 30, max(base, (5 << 30)))
+    }
+
     /// Reading one file never takes this long: an hour of 4K video is minutes, a long book is read 30 pages a step.
     static let defaultTimeLimit: TimeInterval = 15 * 60
 

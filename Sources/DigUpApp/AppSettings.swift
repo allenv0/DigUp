@@ -37,6 +37,9 @@ nonisolated struct AppSettings: Sendable {
     /// skipped in them (`FolderSelection`'s rule, as for `roots`). Searched with "code:" only.
     var codeRoots: [URL]
     var codeExcluded: [URL]
+    /// Which embedding engine indexes and encodes queries: automatic (llama.cpp today), llama.cpp, or MLX.
+    /// Nil in defaults means automatic. Switching never re-indexes (both engines share `VectorCompat`).
+    var embeddingBackend: EmbeddingBackend
     /// The bundle id of the editor code results open in ("" for each file's default app); nil until one is chosen
     /// (`CodeEditor.chosen`).
     var codeEditor: String?
@@ -82,6 +85,10 @@ nonisolated struct AppSettings: Sendable {
             onboarded: defaults.bool(forKey: "onboarded"),
             codeRoots: folders(defaults, "codeRoots"),
             codeExcluded: folders(defaults, "codeExcludedFolders"),
+            embeddingBackend: UserDefaults.standard.string(forKey: "embeddingBackend")
+                .flatMap(EmbeddingBackend.init(rawValue:))
+                ?? defaults.string(forKey: "embeddingBackend").flatMap(EmbeddingBackend.init(rawValue:))
+                ?? .automatic,
             codeEditor: defaults.string(forKey: "codeEditor"),
             codeQuietSeconds: defaults.object(forKey: "codeQuietSeconds") == nil
                 ? 60 : max(1, defaults.double(forKey: "codeQuietSeconds")))
@@ -138,6 +145,10 @@ nonisolated struct AppSettings: Sendable {
 
     static func save(codeEditor: String) {
         defaults.set(codeEditor, forKey: "codeEditor")
+    }
+
+    static func save(embeddingBackend: EmbeddingBackend) {
+        defaults.set(embeddingBackend.rawValue, forKey: "embeddingBackend")
     }
 
     /// Expands "~" and resolves symlinks, so crawled paths match the paths FSEvents reports.

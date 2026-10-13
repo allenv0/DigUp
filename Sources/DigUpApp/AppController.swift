@@ -187,6 +187,23 @@ final class AppController {
         log("code results open in \(CodeEditor.current.name)")
     }
 
+    /// The embedding engine from now on (Settings → Storage). The helper restarts with it and the
+    /// query encoder restarts on next query; switching never re-indexes. First MLX use converts the
+    /// GGUFs once ("Preparing MLX engine…", in the helper's log); if MLX can't start, the helper
+    /// quietly uses llama.cpp.
+    func setEmbeddingBackend(_ backend: EmbeddingBackend) {
+        guard backend != model.settings.embeddingBackend else { return }
+        AppSettings.save(embeddingBackend: backend)
+        model.settings.embeddingBackend = backend
+        engine.setEmbeddingBackend(backend)
+    }
+
+    /// Settings → Storage → "Re-embed everything": drop all vectors and remake them with the current
+    /// engine. File names and keyword search keep working; meaning results refresh as vectors land.
+    func reembedVectors() {
+        engine.reembedAll()
+    }
+
     func setIndexOnBattery(_ on: Bool) {
         AppSettings.save(indexOnBattery: on)
         model.settings.indexOnBattery = on

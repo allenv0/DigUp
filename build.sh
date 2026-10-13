@@ -29,6 +29,10 @@ swift build -c release --product DigUpApp
 swift build -c release --product digup
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
+# MLX's Metal kernels: SwiftPM leaves default.metallib inside a resource bundle the binaries don't
+# search; colocate it beside them (and skip quietly off macOS or without MLX).
+scripts/mlx-metallib.sh || true
+
 # The app icon ("One space", moss; Resources/AppIcon/README.md): macOS 26 draws the layered AppIcon.icon (compiled into
 # Assets.car), older macOS the .icns. Without the former, macOS 26 shows the icon shrunk inside a gray square.
 ICON="Resources/AppIcon.icns"
@@ -39,6 +43,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$BIN_DIR/DigUpApp" "$APP/Contents/MacOS/$APP_NAME"
 # The indexing helper lives in Helpers/: next to DigUp in MacOS/ it would collide on a case-insensitive disk.
 cp "$BIN_DIR/digup" "$APP/Contents/Helpers/digup"
+# MLX's Metal kernels live beside the helper: MLX checks the running binary's folder first, and the
+# helper is what runs the MLX engine (scripts/mlx-metallib.sh placed it beside the build products).
+if [[ -f "$BIN_DIR/mlx.metallib" ]]; then
+  cp "$BIN_DIR/mlx.metallib" "$APP/Contents/Helpers/mlx.metallib"
+fi
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 xcrun actool --compile "$APP/Contents/Resources" --platform macosx --target-device mac --minimum-deployment-target 14.0 \
   --app-icon AppIcon --output-partial-info-plist "$(mktemp -d)/AppIcon.plist" --enable-on-demand-resources NO \
@@ -67,6 +76,11 @@ PLIST="$APP/Contents/Info.plist"
 IDENTITY="${SIGN_ID:-$( [[ -f .sign-id ]] && head -1 .sign-id || echo - )}"
 TIMESTAMP=$([[ "${RELEASE:-}" == 1 ]] && echo --timestamp || echo --timestamp=none)
 codesign --force --sign "$IDENTITY" --options runtime $TIMESTAMP "$APP/Contents/Helpers/digup"
+# MLX's prebuilt kernels are nested code too: an unsigned mlx.metallib fails strict deep verification
+# (release.sh checks it), so it gets the same signature as the helper beside it.
+if [[ -f "$APP/Contents/Helpers/mlx.metallib" ]]; then
+  codesign --force --sign "$IDENTITY" --options runtime $TIMESTAMP "$APP/Contents/Helpers/mlx.metallib"
+fi
 # Sparkle comes ad-hoc signed: its helpers, then the framework, with this identity (the app may only load code signed
 # by its own team).
 for code in "$FW/Versions/B/Autoupdate" "$FW/Versions/B/Updater.app" "$FW"; do

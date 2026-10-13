@@ -1,0 +1,64 @@
+# CI: the MLX backend must never leak off macOS, and parity must never regress.
+#
+# - macOS (M-series): full `swift test` with models (reference-vector + tokenizer + eval gates for
+#   both backends), plus the cross-backend eval matrix as a non-blocking report.
+# - Linux + Windows: build-only, to keep the conditional manifest honest (mlx-swift must never
+#   resolve there).
+# - mlx-swift is pinned exact (like llama.cpp's tag): an upgrade is a deliberate PR gated on this.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  macos-test:
+    runs-on: macos-15
+    env:
+      DIGUP_MODELS: ${{ github.workspace }}/.ci-models
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Build llama.cpp
+        run: scripts/build-llama.sh
+      - name: Download models
+        run: |
+          swift build --product digup
+          .build/debug/digup download-model --to "$DIGUP_MODELS"
+          .build/debug/digup convert-mlx
+      - name: Reference vectors (both backends)
+        run: |
+          scripts/mlx-metallib.sh
+          swift test --filter ReferenceVectorTests
+          scripts/mlx-metallib.sh
+          swift test --filter MLXReferenceVectorTests
+      - name: Full test suite
+        run: swift test
+      - name: Speed table (both engines, JSON)
+        run: |
+          .build/debug/digup speed --backend llama --json > /tmp/speed-llama.json
+          .build/debug/digup speed --backend mlx --json > /tmp/speed-mlx.json
+          cat /tmp/speed-llama.json /tmp/speed-mlx.json
+      - name: Eval matrix (non-blocking report)
+        continue-on-error: true
+        run: scripts/mlx-eval-matrix.sh --json > /tmp/eval-matrix.json; cat /tmp/eval-matrix.json
+
+  linux-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (no MLX)
+        run: |
+          swift build
+          # mlx-swift must never resolve off macOS (conditional manifest).
+          ! grep -q mlx-swift Package.resolved || (echo "mlx-swift resolved on Linux" && exit 1)
+
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (no MLX)
+        run: swift build

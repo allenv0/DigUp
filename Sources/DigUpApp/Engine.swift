@@ -78,10 +78,10 @@ nonisolated struct EngineStatus: Sendable, Equatable {
 ///
 /// The folders can change while it runs (`setFolders`): the watcher follows, and the helper restarts with them.
 nonisolated final class Engine: @unchecked Sendable {
-    /// A query's vector and the model that made it (vectors from different models can't be compared).
+    /// A query's vector and the namespace it lives in (vectors from different namespaces can't be compared).
     struct QueryVector: Sendable {
         let values: [Float]
-        let source: String
+        let compat: String
     }
 
     let indexDirectory: URL
@@ -100,6 +100,9 @@ nonisolated final class Engine: @unchecked Sendable {
     private var helperOutput = Data()
     /// The folders changed while a helper ran: start a new one with them when it's gone.
     private var restartHelper = false
+    /// Settings asked for a full re-embed: once no helper has the index open, drop all vectors so the
+    /// next helper embeds everything again with the current engine.
+    private var reembedWanted = false
     /// When the helper's watchdog ended it lately (`stoppedOnFile`).
     private var watchdogStops: [Date] = []
     /// The helper's exit status when its watchdog ended it on a file (`digup`'s Watchdog: EX_TEMPFAIL).
@@ -136,6 +139,8 @@ nonisolated final class Engine: @unchecked Sendable {
     private var excludedTypes: [String]
     private var codeRoots: [URL]
     private var codeExcluded: [URL]
+    /// Which embedding engine the helper and query encoder use. Switching never re-indexes (D3).
+    private var backend: EmbeddingBackend
 
     // indexQueue only
     /// Code search was turned off: the code index goes once no helper has it open.
@@ -175,6 +180,7 @@ nonisolated final class Engine: @unchecked Sendable {
         codeRoots = settings.codeRoots
         codeExcluded = settings.codeExcluded
         codeQuietSeconds = settings.codeQuietSeconds
+        backend = settings.embeddingBackend
         pruneWanted = !settings.roots.isEmpty
         self.backfillBlocker = backfillBlocker
         self.heldUntil = heldUntil
@@ -225,6 +231,66 @@ nonisolated final class Engine: @unchecked Sendable {
     }
 
     var hasCode: Bool { lock.withLock { !codeRoots.isEmpty } }
+
+    /// The engine in use (Settings' picker sets it via `setEmbeddingBackend`).
+    var embeddingBackend: EmbeddingBackend { lock.withLock { backend } }
+
+    /// New embedding engine: the helper restarts with it and the query encoder restarts on next query.
+    /// Switching never re-indexes — both engines share `VectorCompat` — and if MLX can't start the
+    /// helper falls back to llama.cpp and logs it (see `makeEmbedder`).
+    func setEmbeddingBackend(_ backend: EmbeddingBackend) {
+        lock.withLock { self.backend = backend }
+        log("engine: \(backend.displayName) (switching engines never re-indexes)")
+        encoderQueue.async { [self] in stopEncoder() }
+        indexQueue.async { [self] in
+            if helper != nil {
+                restartHelper = true
+                stopHelper()
+            } else {
+                startHelper()
+            }
+        }
+    }
+
+    /// Drops every vector and embeds everything again with the current engine (Settings → Storage).
+    /// File names and keyword search stay usable throughout; meaning results refresh as vectors land.
+    /// Nothing happens without folders to read — wiping vectors nobody will remake would only break search.
+    func reembedAll() {
+        let (backend, hasFolders): (EmbeddingBackend, Bool) = lock.withLock {
+            (self.backend, !roots.isEmpty || !codeRoots.isEmpty)
+        }
+        guard hasFolders else {
+            log("engine: nothing to re-embed (no folders chosen)")
+            return
+        }
+        log("engine: re-embedding everything with \(backend.resolved == .mlx ? "MLX" : "llama.cpp")")
+        indexQueue.async { [self] in
+            reembedWanted = true
+            if helper != nil {
+                restartHelper = true
+                stopHelper()
+            } else {
+                resetVectors()
+                reembedWanted = false
+                startHelper()
+            }
+        }
+    }
+
+    /// Drops all vectors from both indexes (indexQueue, with no helper running). File rows stay: the
+    /// next helper sync re-queues them, and `Indexer.resetAll` clears the fingerprint so provenance
+    /// records the engine that remakes them.
+    private func resetVectors() {
+        do {
+            try IndexStore(directory: indexDirectory).resetAll()
+            let codeFile = indexDirectory.appendingPathComponent(IndexStore.codeFile)
+            if FileManager.default.fileExists(atPath: codeFile.path) {
+                try IndexStore(directory: indexDirectory, file: IndexStore.codeFile).resetAll()
+            }
+        } catch {
+            log("engine: couldn't drop vectors for a re-embed: \(error)")
+        }
+    }
 
     /// New code folders (none: code search off). The helper restarts with them; without any, the code index is deleted
     /// once the helper is gone.
@@ -494,6 +560,9 @@ nonisolated final class Engine: @unchecked Sendable {
         let process = Process()
         process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup")
         var arguments = ["index-service", "--index", indexDirectory.path]
+        let helperBackend: EmbeddingBackend = lock.withLock { backend }
+        // Always explicit so the helper never inherits a stray $DIGUP_BACKEND from the environment.
+        arguments += ["--backend", helperBackend.rawValue]
         if backfill { arguments.append("--backfill") }
         if pruneWanted { arguments.append("--prune") }
         for folder in excluded { arguments += ["--exclude", folder.path] }
@@ -718,6 +787,12 @@ nonisolated final class Engine: @unchecked Sendable {
         refreshCodeSearcher(force: true)
         returnFreedMemory()
         removeCodeIndexIfAsked()
+        if reembedWanted {
+            // Settings asked for a full re-embed: the index is ours alone now, so drop the vectors
+            // before the next helper syncs (it then embeds everything again with the current engine).
+            reembedWanted = false
+            resetVectors()
+        }
         if restartHelper {
             // The folders changed: a new helper with the new ones.
             restartHelper = false
@@ -813,9 +888,12 @@ nonisolated final class Engine: @unchecked Sendable {
         return await withCheckedContinuation { continuation in
             searchQueue.async { [self] in
                 var values = vector?.values
-                if let vector, let indexed = searcher?.vectorSource, indexed != vector.source {
+                // Vectors from another namespace must never meet: keyword-only then, and say so once.
+                // The namespace is `compat`, not `source` — llama.cpp and MLX share one (D3), so a switch
+                // of engines must never turn meaning search off.
+                if let vector, let indexed = searcher?.vectorCompat, indexed != vector.compat {
                     if !warnedAboutSource {
-                        log("meaning search is off: the index was built with \(indexed), the encoder is \(vector.source)")
+                        log("meaning search is off: the index's vectors live in \(indexed), the encoder makes \(vector.compat)")
                         warnedAboutSource = true
                     }
                     values = nil
@@ -844,7 +922,7 @@ nonisolated final class Engine: @unchecked Sendable {
                 let (roots, skipped) = lock.withLock { (codeRoots.map(\.path), codeExcluded.map(\.path)) }
                 guard !roots.isEmpty, let codeSearcher else { return continuation.resume(returning: []) }
                 var values = vector?.values
-                if let vector, let indexed = codeSearcher.vectorSource, indexed != vector.source { values = nil }
+                if let vector, let indexed = codeSearcher.vectorCompat, indexed != vector.compat { values = nil }
                 let hits = (try? codeSearcher.search(text, queryVector: values, limit: limit, prefixLast: prefixLast)) ?? []
                 continuation.resume(returning: hits.filter { hit in
                     FolderSelection.isSearched(hit.path, folders: roots, skipped: skipped)
@@ -973,7 +1051,7 @@ nonisolated final class Engine: @unchecked Sendable {
         defer { scheduleIdleExit() }
         do {
             let values = try worker.embedTexts([code ? Prompts.codeQuery(text) : Prompts.query(text)]).first ?? []
-            let vector = QueryVector(values: values, source: worker.info.vectorSource)
+            let vector = QueryVector(values: values, compat: worker.info.compat)
             vectorCache[key] = vector
             return vector
         } catch {
@@ -995,11 +1073,19 @@ nonisolated final class Engine: @unchecked Sendable {
         do {
             // The bundled helper runs the model (`digup worker`); in dev runs DIGUP_WORKER_DIR swaps in another worker.
             var config = python ?? .helper(Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/digup"))
+            let wanted: EmbeddingBackend = lock.withLock { backend }
+            if python == nil {
+                // Explicit backend so a stray $DIGUP_BACKEND can't change what the panel encodes with.
+                config.arguments += ["--backend", wanted.rawValue]
+            }
             config.environment["DIGUP_MODELS"] = modelsDirectory.path
             config.log = indexDirectory.appendingPathComponent("worker-query.log")
             config.qos = .userInitiated
             let worker = try EmbeddingWorker(config, textOnly: true)
             encoder = worker
+            if wanted.resolved == .mlx, worker.info.runtime.contains("llama") {
+                log("encoder: MLX couldn't start, using llama.cpp instead (\(worker.info.vectorSource))")
+            }
             log("encoder: ready in \(ms(since: started)) (model load and warm-up \(worker.info.loadSeconds ?? 0) s)")
             update { $0.encoder = .ready }
             return worker
